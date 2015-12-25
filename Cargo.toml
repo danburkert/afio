@@ -1,0 +1,13 @@
+[package]
+name = "afio"
+version = "0.1.0"
+authors = ["Dan Burkert <dan@danburkert.com>"]
+
+[dependencies]
+eventual = "0.1"
+libc = "0.2"
+mio = "0.5"
+threadpool = "0.1"
+
+[dev-dependencies]
+tempdir = "0.3"
