@@ -5,8 +5,10 @@ authors = ["Dan Burkert <dan@danburkert.com>"]
 
 [dependencies]
 eventual = "0.1"
+fs2 = "0.2"
 libc = "0.2"
 mio = "0.5"
+slab = "0.1"
 threadpool = "0.1"
 
 [dev-dependencies]

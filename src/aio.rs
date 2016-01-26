@@ -3,6 +3,7 @@
 #![allow(non_camel_case_types)]
 
 use std::os::unix::io::AsRawFd;
+use std::ptr;
 
 use libc::{
     c_int,
@@ -13,13 +14,19 @@ use libc::{
 
 pub type aio_context_t = c_ulong;
 
-pub const IOCB_CMD_PREAD: u16 = 0;
-pub const IOCB_CMD_PWRITE: u16 = 1;
-pub const IOCB_CMD_FSYNC: u16 = 2;
-pub const IOCB_CMD_FDSYNC: u16 = 3;
-pub const IOCB_CMD_NOOP: u16 = 6;
-pub const IOCB_CMD_PREADV: u16 = 7;
-pub const IOCB_CMD_PWRITEV: u16 = 8;
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u16)]
+pub enum iocb_cmd {
+    PREAD = 0,
+    PWRITE = 1,
+    PREADV = 7,
+    PWRITEV = 8,
+}
+
+impl Default for iocb_cmd {
+    fn default() -> iocb_cmd { iocb_cmd::PREAD }
+}
+
 pub const IOCB_FLAG_RESFD: u32 = 1 << 0;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -34,7 +41,7 @@ pub struct io_event {
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct iocb {
-    aio_data: u64,
+    pub aio_data: u64,
 
     #[cfg(target_endian = "big")]
     aio_reserved1: u32,
@@ -42,16 +49,16 @@ pub struct iocb {
     #[cfg(target_endian = "little")]
     aio_reserved1: u32,
 
-    pub aio_lio_opcode: u16,
+    pub aio_lio_opcode: iocb_cmd,
     pub aio_reqprio: i16,
     pub aio_fildes: u32,
 
     pub aio_buf: u64,
     pub aio_nbytes: u64,
     pub aio_offset: i64,
-    pub aio_reserved2: u64,
+    aio_reserved2: u64,
     pub aio_flags: u32,
-    /// If the Flags::RESFD flag on `aio_flags` is set, this is an eventfd to
+    /// If the IOCB_FLAG_RSFD value in `aio_flags` is set, this is an eventfd to
     /// signal AIO readiness to.
     pub aio_resfd: u32,
 }
@@ -59,37 +66,34 @@ pub struct iocb {
 impl iocb {
 
     pub fn pread<F>(file: &F, offset: i64, buf: &mut [u8]) -> iocb where F: AsRawFd {
-        iocb(IOCB_CMD_PREAD, file, offset, buf)
+        iocb(iocb_cmd::PREAD, file, offset, buf)
     }
 
     pub fn pwrite<F>(file: &F, offset: i64, buf: &[u8]) -> iocb where F: AsRawFd {
-        iocb(IOCB_CMD_PWRITE, file, offset, buf)
+        iocb(iocb_cmd::PWRITE, file, offset, buf)
     }
 
-    pub fn preadv<F>(file: &F, offset: i64, bufs: &[&mut [u8]]) -> iocb where F: AsRawFd {
+    pub fn preadv<F>(file: &F, offset: i64, bufs: &[&mut[u8]], len: usize) -> iocb where F: AsRawFd {
         // This relies on iovec and std::raw::Slice having the same representation.
-        iocb(IOCB_CMD_PREADV, file, offset, bufs)
+        iocb(iocb_cmd::PREADV, file, offset, bufs)
     }
 
-    pub fn pwritev<F>(file: &F, offset: i64, bufs: &[&[u8]]) -> iocb where F: AsRawFd {
+    pub fn pwritev<F>(file: &F, offset: i64, bufs: &[&[u8]], len: usize) -> iocb where F: AsRawFd {
         // This relies on iovec and std::raw::Slice having the same representation.
-        iocb(IOCB_CMD_PWRITEV, file, offset, bufs)
-    }
-
-    pub fn sync_all<F>(file: &F) -> iocb where F: AsRawFd {
-        iocb::<F, u8>(IOCB_CMD_FSYNC, file, 0, &[])
-    }
-
-    pub fn sync_data<F>(file: &F) -> iocb where F: AsRawFd {
-        iocb::<F, u8>(IOCB_CMD_FDSYNC, file, 0, &[])
+        iocb(iocb_cmd::PWRITEV, file, offset, bufs)
     }
 
     pub fn set_data(&mut self, data: u64) {
         self.aio_data = data;
     }
+
+    pub fn set_resfd(&mut self, fd: u32) {
+        self.aio_resfd = fd;
+        self.aio_flags = IOCB_FLAG_RESFD;
+    }
 }
 
-fn iocb<F, T>(cmd: u16, file: &F, offset: i64, buf: &[T]) -> iocb where F: AsRawFd {
+fn iocb<F, T>(cmd: iocb_cmd, file: &F, offset: i64, buf: &[T]) -> iocb where F: AsRawFd {
     let mut cb = iocb::default();
     cb.aio_fildes = file.as_raw_fd() as u32;
     cb.aio_lio_opcode = cmd;
@@ -148,10 +152,10 @@ mod test {
         let timeout_ptr = timespec.as_mut().map(|ptr| ptr as *mut _).unwrap_or(ptr::null_mut());
 
         let ret = io_getevents(ctx,
-                            minimum as c_long,
-                            events.len() as c_long,
-                            events.as_mut_ptr(),
-                            timeout_ptr);
+                               minimum as c_long,
+                               events.len() as c_long,
+                               events.as_mut_ptr(),
+                               timeout_ptr);
         if ret < 0 {
             Err(Error::from_raw_os_error(-ret))
         } else {
@@ -189,14 +193,13 @@ mod test {
             assert_eq!(0, io_setup(128, &mut ctx));
 
             let buf = [42; 4096];
-            let mut cb = iocb::pwrite(&mut file, 0, &buf);
+            let mut cb = iocb::pwrite(&mut file, 0, &buf[..]);
             cb.set_data(99);
             let mut cbs: &mut [*mut _] = &mut [&mut cb];
 
             assert_eq!(1, submit(ctx, cbs).unwrap());
 
             let events = &mut [io_event::default()];
-
 
             assert_eq!(1, getevents(ctx, 1, events, None).unwrap());
             assert_eq!(99, events[0].data);
